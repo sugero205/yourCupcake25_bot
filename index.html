@@ -894,27 +894,69 @@ const Snd = (() => {
   // ---- loops
   const DAY = { ch: [[55, 59, 62, 66], [54, 57, 61, 64], [52, 55, 59, 62], [57, 62, 64, 67]], bass: [43, 42, 40, 45], penta: [74, 76, 78, 81, 83, 86], bpm: 74 };
   const HW = { ch: [[57, 60, 64, 67], [53, 57, 60, 64], [48, 52, 55, 60], [52, 56, 59, 62]], bass: [45, 41, 36, 40], penta: [76, 79, 81, 84, 88, 72], bpm: 68 };
-  function scheduleBar(t) {
-    const P = mode === 'day' ? DAY : HW, beat = 60 / P.bpm, ci = bar % 4, ch = P.ch[ci];
-    ch.forEach((n, i) => { tone(NOTE(n), t + i * .025, beat * 3.6, { type: 'triangle', gain: .05, attack: .03, out: musicG, lp: 1500 }); tone(NOTE(n), t + i * .025, beat * 3.6, { type: 'sine', gain: .036, attack: .02, out: musicG, detune: 7 }); });
-    tone(NOTE(P.bass[ci]), t, beat * 1.6, { type: 'sine', gain: .16, out: musicG, attack: .01 });
-    tone(NOTE(P.bass[ci]), t + beat * 2.5, beat * 1.2, { type: 'sine', gain: .12, out: musicG });
+  // main menu: a rainy Petersburg evening outside Хлебник — Am9 · Fmaj7 · Cmaj9 · E7sus, slow and soft
+  const MENU = { ch: [[57, 60, 64, 71], [53, 57, 60, 64], [48, 55, 59, 62], [52, 57, 59, 62]], bass: [45, 41, 36, 40], penta: [76, 79, 81, 83, 84, 88], bpm: 62,
+    mel: [[0, 76, 1], [1.5, 79, 1], [2.5, 81, 1.5], [4, 84, 2], [6.5, 83, .8], [7, 79, 1.5], [8, 76, 1], [9.5, 74, 1], [10.5, 72, 1.5], [12, 76, 2.5], [14.5, 71, 1]] };
+  let bus = null;   // music of the current mode goes through its own bus, so a mode switch can fade the old one out cleanly
+  function newBus() {
+    if (!ac) return;
+    if (bus) { const old = bus; old.gain.setTargetAtTime(0, ac.currentTime, .25); setTimeout(() => { try { old.disconnect(); } catch (e) { } }, 2500); }
+    bus = ac.createGain(); bus.gain.value = 1; bus.connect(musicG);
+  }
+  function scheduleMenuBar(t) {
+    const P = MENU, beat = 60 / P.bpm, ci = bar % 4, ch = P.ch[ci];
+    ch.forEach((n, i) => { tone(NOTE(n), t + i * .06, beat * 3.9, { type: 'triangle', gain: .042, attack: .12, out: bus, lp: 1100 }); tone(NOTE(n), t + i * .06, beat * 3.9, { type: 'sine', gain: .03, attack: .1, out: bus, detune: 9 }); });
+    tone(NOTE(P.bass[ci]), t, beat * 2.4, { type: 'sine', gain: .13, out: bus, attack: .03 });
+    tone(NOTE(P.bass[ci] + 7), t + beat * 2.5, beat * 1.3, { type: 'sine', gain: .07, out: bus, attack: .03 });
     for (let b = 0; b < 4; b++) {
       const bt = t + b * beat;
-      if (b === 0 || b === 2) { const o = ac.createOscillator(), g = ac.createGain(); o.frequency.setValueAtTime(120, bt); o.frequency.exponentialRampToValueAtTime(42, bt + .14); g.gain.setValueAtTime(.3, bt); g.gain.exponentialRampToValueAtTime(.0001, bt + .22); o.connect(g); g.connect(musicG); o.start(bt); o.stop(bt + .25); }
-      if (b === 1 || b === 3) noise(bt, .12, { gain: .065, freq: 1900, q: .8, out: musicG });
-      noise(bt, .03, { gain: .028, type: 'highpass', freq: 7000, out: musicG });
-      noise(bt + beat * .62, .025, { gain: .02, type: 'highpass', freq: 7500, out: musicG });
+      if (b === 0) { const o = ac.createOscillator(), g = ac.createGain(); o.frequency.setValueAtTime(95, bt); o.frequency.exponentialRampToValueAtTime(40, bt + .16); g.gain.setValueAtTime(.2, bt); g.gain.exponentialRampToValueAtTime(.0001, bt + .26); o.connect(g); g.connect(bus); o.start(bt); o.stop(bt + .3); }
+      if (b === 2) noise(bt, .2, { gain: .04, freq: 1500, q: .6, out: bus, sweep: 900 });          // brushed snare
+      noise(bt + beat * .5, .04, { gain: .013, type: 'highpass', freq: 8000, out: bus });
+    }
+    // the music-box melody: every other bar a phrase, otherwise a few lazy bells
+    const ph = (bar >> 1) % 2 === 0 ? P.mel.filter(m => (bar % 2 ? m[0] >= 8 : m[0] < 8)) : [];
+    for (const [at, n, d] of ph) bell(NOTE(n), t + (at % 8) * beat * .5, .045, d * 1.4, bus);
+    if (!ph.length && Math.random() < .7) bell(NOTE(pick(P.penta)), t + beat * (Math.random() < .5 ? 1 : 2.5), .035, 1.8, bus);
+    bar++;
+  }
+  let rainSrc = null, rainG = null;
+  function rain(onOff) {
+    if (!ac) return;
+    if (onOff && !rainSrc) {
+      rainSrc = ac.createBufferSource(); rainSrc.buffer = noiseBuf; rainSrc.loop = true;
+      const lp = ac.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 2600;
+      const hp = ac.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 380;
+      rainG = ac.createGain(); rainG.gain.value = 0; rainG.gain.setTargetAtTime(.075, ac.currentTime, 1.2);
+      rainSrc.connect(hp); hp.connect(lp); lp.connect(rainG); rainG.connect(musicG); rainSrc.start();
+    } else if (!onOff && rainSrc) {
+      const s = rainSrc, g = rainG; rainSrc = null; rainG = null;
+      g.gain.setTargetAtTime(0, ac.currentTime, .4); setTimeout(() => { try { s.stop(); } catch (e) { } }, 1600);
+    }
+  }
+  function scheduleBar(t) {
+    if (mode === 'menu') return scheduleMenuBar(t);
+    const P = mode === 'day' ? DAY : HW, beat = 60 / P.bpm, ci = bar % 4, ch = P.ch[ci];
+    ch.forEach((n, i) => { tone(NOTE(n), t + i * .025, beat * 3.6, { type: 'triangle', gain: .05, attack: .03, out: bus, lp: 1500 }); tone(NOTE(n), t + i * .025, beat * 3.6, { type: 'sine', gain: .036, attack: .02, out: bus, detune: 7 }); });
+    tone(NOTE(P.bass[ci]), t, beat * 1.6, { type: 'sine', gain: .16, out: bus, attack: .01 });
+    tone(NOTE(P.bass[ci]), t + beat * 2.5, beat * 1.2, { type: 'sine', gain: .12, out: bus });
+    for (let b = 0; b < 4; b++) {
+      const bt = t + b * beat;
+      if (b === 0 || b === 2) { const o = ac.createOscillator(), g = ac.createGain(); o.frequency.setValueAtTime(120, bt); o.frequency.exponentialRampToValueAtTime(42, bt + .14); g.gain.setValueAtTime(.3, bt); g.gain.exponentialRampToValueAtTime(.0001, bt + .22); o.connect(g); g.connect(bus); o.start(bt); o.stop(bt + .25); }
+      if (b === 1 || b === 3) noise(bt, .12, { gain: .065, freq: 1900, q: .8, out: bus });
+      noise(bt, .03, { gain: .028, type: 'highpass', freq: 7000, out: bus });
+      noise(bt + beat * .62, .025, { gain: .02, type: 'highpass', freq: 7500, out: bus });
       const pr = mode === 'day' ? .32 : .5;
-      if (Math.random() < pr) bell(NOTE(pick(P.penta)), bt + (Math.random() < .5 ? 0 : beat * .62), mode === 'day' ? .034 : .05, 1.6, musicG);
+      if (Math.random() < pr) bell(NOTE(pick(P.penta)), bt + (Math.random() < .5 ? 0 : beat * .62), mode === 'day' ? .034 : .05, 1.6, bus);
     }
     bar++;
   }
   let crackleSrc = null;
   function startMusic() {
     if (!ac || timer) return;
+    newBus();
     nextBar = ac.currentTime + .1;
-    timer = setInterval(() => { const P = mode === 'day' ? DAY : HW; while (nextBar < ac.currentTime + .6) { scheduleBar(nextBar); nextBar += 4 * 60 / P.bpm; } }, 120);
+    timer = setInterval(() => { const P = mode === 'menu' ? MENU : mode === 'day' ? DAY : HW; while (nextBar < ac.currentTime + .6) { scheduleBar(nextBar); nextBar += 4 * 60 / P.bpm; } }, 120);
     crackleSrc = ac.createBufferSource(); crackleSrc.buffer = crackleBuf; crackleSrc.loop = true;
     const g = ac.createGain(); g.gain.value = .5; crackleSrc.connect(g); g.connect(musicG); crackleSrc.start();
   }
@@ -922,7 +964,9 @@ const Snd = (() => {
   const now = () => ac ? ac.currentTime : 0;
   return {
     init, startMusic, stopMusic,
-    setMode(m) { mode = m; },
+    setMode(m) { if (m === mode) return; const wasMenu = mode === 'menu'; mode = m; if (m !== 'menu') rain(false); if (wasMenu && timer && ac) { newBus(); bar = 0; nextBar = ac.currentTime + .08; } },
+    // main-menu music: if the browser won't play before a tap, it starts on the first tap anywhere
+    menu() { init(); if (!ac) return; if (mode !== 'menu') { mode = 'menu'; bar = 0; if (timer) { newBus(); nextBar = ac.currentTime + .08; } } if (!timer) startMusic(); rain(true); },
     get musicOn() { return musicOn; }, get sfxOn() { return sfxOn; },
     setMusic(v) { musicOn = v; store.set('music', v); if (musicG) musicG.gain.setTargetAtTime(v ? .3 : 0, ac.currentTime, .1); },
     setSfx(v) { sfxOn = v; store.set('sfx', v); if (sfxG) sfxG.gain.setTargetAtTime(v ? .7 : 0, ac.currentTime, .05); },
@@ -3430,7 +3474,7 @@ function resetGame() {
   setEmotion('normal'); updateHud(true); updateNext(); updateWindow();
 }
 function startShift(opts = {}) {
-  Snd.init(); Snd.startMusic(); Splash.stop();
+  Snd.init(); Snd.setMode('day'); Snd.startMusic(); Splash.stop();
   show('#start', false); show('#finale', false); show('#postWrap', false); show('#pause', false);
   app.classList.remove('hidden-ui'); $('#scene').classList.remove('dim'); $('#neon').classList.remove('off');
   fin = null; state = 'play'; balloons = [];
@@ -3450,6 +3494,7 @@ function goMenu() {
   $('#bubble').classList.remove('on'); $('#toast').classList.remove('on'); $('#ach').classList.remove('on');
   app.classList.remove('hidden-ui'); $('#scene').classList.remove('dim'); $('#neon').classList.remove('off');
   state = 'start'; refreshStart(); show('#start'); Splash.restartQuick();
+  Snd.menu();
 }
 function pause() {
   if (state !== 'play') return;
@@ -3933,6 +3978,7 @@ async function boot() {
   $('#winWeb').src = WEBURL.corner;
   state = 'start'; bootMark('ui');
   Splash.start(); bootMark('splash');
+  Snd.menu();   // plays right away where allowed, otherwise from the first tap
   try { document.fonts && document.fonts.ready.then(() => { fitBoard(); if (state === 'start') Splash.rebuild(); }); } catch (e) { }
   Records.init();
   requestAnimationFrame(t => { last = t; requestAnimationFrame(frame); });
