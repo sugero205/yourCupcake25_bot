@@ -852,7 +852,7 @@ const Snd = (() => {
     try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e) { }
     try { const a = document.createElement('audio'); a.setAttribute('playsinline', ''); a.setAttribute('x-webkit-airplay', 'deny'); a.preload = 'auto'; a.src = silentWavUrl(); a.volume = .01; const p = a.play(); if (p && p.catch) p.catch(() => { htmlUnlocked = false; }); } catch (e) { htmlUnlocked = false; }
   }
-  function wake() { if (ac && ac.state !== 'running' && ac.state !== 'closed') { try { const p = ac.resume(); if (p && p.catch) p.catch(() => { }); } catch (e) { } } }
+  function wake() { if (ac && ac.state !== 'running' && ac.state !== 'closed') { try { const p = ac.resume(); if (p && p.then) p.then(() => { if (wantMusic) startMusic(); if (wantRain && mode === 'menu') rain(true); }, () => { }); } catch (e) { } } }
   // every tap (on any button too) is a chance to (re)start sound: the first tap creates it, later taps revive it after a phone call / app switch
   for (const ev of ['pointerup', 'touchend', 'click', 'keydown']) document.addEventListener(ev, () => { unlockHtml(); if (ac) wake(); }, { capture: true, passive: true });
   document.addEventListener('visibilitychange', () => { if (!document.hidden) wake(); });
@@ -860,6 +860,7 @@ const Snd = (() => {
     unlockHtml();
     if (ac) { wake(); return; }
     try { ac = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { return; }
+    ac.onstatechange = () => { if (ac.state === 'running') { if (wantMusic) startMusic(); if (wantRain && mode === 'menu') rain(true); } };
     wake();
     master = ac.createGain(); master.gain.value = .9;
     const comp = ac.createDynamicsCompressor(); comp.threshold.value = -14; comp.ratio.value = 3;
@@ -905,7 +906,7 @@ const Snd = (() => {
   }
   function scheduleMenuBar(t) {
     const P = MENU, beat = 60 / P.bpm, ci = bar % 4, ch = P.ch[ci];
-    ch.forEach((n, i) => { tone(NOTE(n), t + i * .06, beat * 3.9, { type: 'triangle', gain: .042, attack: .12, out: bus, lp: 1100 }); tone(NOTE(n), t + i * .06, beat * 3.9, { type: 'sine', gain: .03, attack: .1, out: bus, detune: 9 }); });
+    ch.forEach((n, i) => { tone(NOTE(n), t + i * .06, beat * 3.9, { type: 'triangle', gain: .056, attack: .12, out: bus, lp: 1500 }); tone(NOTE(n + 12), t + i * .06, beat * 3.9, { type: 'sine', gain: .022, attack: .14, out: bus, detune: 9 }); });
     tone(NOTE(P.bass[ci]), t, beat * 2.4, { type: 'sine', gain: .13, out: bus, attack: .03 });
     tone(NOTE(P.bass[ci] + 7), t + beat * 2.5, beat * 1.3, { type: 'sine', gain: .07, out: bus, attack: .03 });
     for (let b = 0; b < 4; b++) {
@@ -916,13 +917,15 @@ const Snd = (() => {
     }
     // the music-box melody: every other bar a phrase, otherwise a few lazy bells
     const ph = (bar >> 1) % 2 === 0 ? P.mel.filter(m => (bar % 2 ? m[0] >= 8 : m[0] < 8)) : [];
-    for (const [at, n, d] of ph) bell(NOTE(n), t + (at % 8) * beat * .5, .045, d * 1.4, bus);
-    if (!ph.length && Math.random() < .7) bell(NOTE(pick(P.penta)), t + beat * (Math.random() < .5 ? 1 : 2.5), .035, 1.8, bus);
+    for (const [at, n, d] of ph) bell(NOTE(n), t + (at % 8) * beat * .5, .06, d * 1.4, bus);
+    if (!ph.length && Math.random() < .7) bell(NOTE(pick(P.penta)), t + beat * (Math.random() < .5 ? 1 : 2.5), .05, 1.8, bus);
     bar++;
   }
   let rainSrc = null, rainG = null;
   function rain(onOff) {
     if (!ac) return;
+    wantRain = onOff && ac.state !== 'running';
+    if (wantRain) return;
     if (onOff && !rainSrc) {
       rainSrc = ac.createBufferSource(); rainSrc.buffer = noiseBuf; rainSrc.loop = true;
       const lp = ac.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 2600;
@@ -952,15 +955,24 @@ const Snd = (() => {
     bar++;
   }
   let crackleSrc = null;
+  let wantMusic = false, wantRain = false;
   function startMusic() {
     if (!ac || timer) return;
+    // phones keep sound "asleep" until the first tap: wait for it instead of scheduling music into a frozen clock
+    if (ac.state !== 'running') { wantMusic = true; return; }
+    wantMusic = false;
     newBus();
     nextBar = ac.currentTime + .1;
-    timer = setInterval(() => { const P = mode === 'menu' ? MENU : mode === 'day' ? DAY : HW; while (nextBar < ac.currentTime + .6) { scheduleBar(nextBar); nextBar += 4 * 60 / P.bpm; } }, 120);
+    timer = setInterval(() => {
+      if (ac.state !== 'running') return;
+      const P = mode === 'menu' ? MENU : mode === 'day' ? DAY : HW;
+      if (nextBar < ac.currentTime - 1) nextBar = ac.currentTime + .05;      // came back from background: no backlog burst
+      while (nextBar < ac.currentTime + .6) { scheduleBar(nextBar); nextBar += 4 * 60 / P.bpm; }
+    }, 120);
     crackleSrc = ac.createBufferSource(); crackleSrc.buffer = crackleBuf; crackleSrc.loop = true;
     const g = ac.createGain(); g.gain.value = .5; crackleSrc.connect(g); g.connect(musicG); crackleSrc.start();
   }
-  function stopMusic() { if (timer) { clearInterval(timer); timer = null; } if (crackleSrc) { try { crackleSrc.stop(); } catch (e) { } crackleSrc = null; } }
+  function stopMusic() { wantMusic = false; if (timer) { clearInterval(timer); timer = null; } if (crackleSrc) { try { crackleSrc.stop(); } catch (e) { } crackleSrc = null; } }
   const now = () => ac ? ac.currentTime : 0;
   return {
     init, startMusic, stopMusic,
